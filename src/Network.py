@@ -6,18 +6,16 @@ from Transformer.src.Transformer import Transformer, Mask
 
 import torch
 from torch import nn, Tensor
-from torch.utils.data import Dataset
+from src.DataPrep import TLGDataset
 from torch import optim
 from torch.nn import NLLLoss
 from torch.nn.utils.rnn import pad_sequence
-
-from tqdm import tqdm
 
 import numpy as np
 
 from src import DataPrep
 
-from typing import Callable, List, Any, Tuple
+from typing import List, Any, Tuple
 
 
 def accuracy(predictions: Tensor, truth: Tensor, ignore_idx: int) -> Tuple[Tuple[int, int], Tuple[int, int]]:
@@ -51,8 +49,10 @@ class Supertagger(nn.Module):
             -> Tensor:
         return self.transformer.forward(encoder_input, decoder_input, encoder_mask, decoder_mask)
 
-    def train_epoch(self, dataset: Dataset, batch_size: int, criterion: Callable[[Tensor, Tensor], Tensor],
+    def train_epoch(self, dataset: TLGDataset, batch_size: int, criterion: NLLLoss,
                     optimizer: optim.Optimizer, train_indices: List[int]) -> Any:
+        self.train()
+
         permutation = np.random.permutation(train_indices)
 
         batch_start = 0
@@ -63,8 +63,8 @@ class Supertagger(nn.Module):
             optimizer.zero_grad()
             batch_end = min([batch_start + batch_size, len(permutation)])
 
-            batch_x = [dataset.X[permutation[train_indices[i]]] for i in range(batch_start, batch_end)]
-            batch_y = [dataset.Y[permutation[train_indices[i]]] for i in range(batch_start, batch_end)]
+            batch_x = [dataset.X[permutation[i]] for i in range(batch_start, batch_end)]
+            batch_y = [dataset.Y[permutation[i]] for i in range(batch_start, batch_end)]
 
             lens = list(map(len, batch_x))
 
@@ -95,14 +95,61 @@ class Supertagger(nn.Module):
 
         return loss, BS, BTS, BW, BTW
 
+    def eval_epoch(self, dataset: TLGDataset, batch_size: int, val_indices: List[int]) -> Any:
+        self.eval()
+
+        with torch.no_grad():
+
+            permutation = val_indices
+
+            batch_start = 0
+            BS, BTS, BW, BTW = 0, 0, 0, 0
+
+            while batch_start < len(permutation):
+                batch_end = min([batch_start + batch_size, len(permutation)])
+
+                batch_x = [dataset.X[permutation[i]] for i in range(batch_start, batch_end)]
+                batch_y = [dataset.Y[permutation[i]] for i in range(batch_start, batch_end)]
+
+                lens = list(map(len, batch_x))
+
+                batch_x = pad_sequence(batch_x, batch_first=True).to(self.device)
+                batch_y = pad_sequence(batch_y, batch_first=True).long().to(self.device)  # todo
+
+                encoder_mask = torch.ones(batch_y.shape[0], batch_y.shape[1], batch_y.shape[1])
+                # for i, l in enumerate(lens):
+                #     encoder_mask[i, l::, :] = torch.zeros([1, batch_x.shape[1] - l, batch_x.shape[1]])
+                # encoder_mask[i, :, l::] = torch.zeros([1, batch_x.shape[1], batch_x.shape[1] - l])
+                encoder_mask = encoder_mask.to(self.device)
+                # decoder_mask = torch.ones(batch_y.shape[0], batch_y.shape[1], batch_y.shape[1]).to(self.device)
+                batch_p = self.transformer.infer(batch_x, encoder_mask, dataset.type_dict['SOS'])
+                (bs, bts), (bw, btw) = accuracy(batch_p[:, :-1], batch_y[:, 1:], 0)
+                BS += bs
+                BTS += bts
+                BW += bw
+                BTW += btw
+
+                batch_start += batch_size
+
+        return BS, BTS, BW, BTW
+
 
 def do_everything():
     tlg = DataPrep.do_everything()
     num_classes = len(tlg.type_dict) + 1  # todo
-    n = Supertagger(num_classes, 6, 4, 4, 256, 'cuda')
+    n = Supertagger(num_classes, 4, 6, 6, 128, 'cuda')
     L = NLLLoss(ignore_index=0, reduction='sum')
-    o = optim.Adam(n.parameters(), lr=1e-03)
+    o = optim.Adam(n.parameters(), lr=2e-04)
+
+    splitpoint = int(np.floor(0.25*len(tlg)))
+    indices = list(range(len(tlg)))
+    np.random.shuffle(indices)
+    train_indices, val_indices = indices[splitpoint:], indices[:splitpoint]  # todo
+
     for i in range(1000):
-        loss, bs, bts, bw, btw = n.train_epoch(tlg, 256, L, o, list(range(1000)))
+        loss, bs, bts, bw, btw = n.train_epoch(tlg, 128, L, o, train_indices)
         print('Epoch {}'.format(i))
         print(' Loss: {}, Sentence Accuracy: {}, Word Accuracy: {}'.format(loss, bts/bs, btw/bw))
+        if i % 5 == 0:
+            bs, bts, bw, btw = n.eval_epoch(tlg, 32, val_indices)
+            print(' VALIDATION Sentence Accuracy: {}, Word Accuracy: {}'.format(bts / bs, btw / bw))
