@@ -89,20 +89,28 @@ def do_everything():
     vocab_path = 'data/vocabulary.voc'
     X, Y, Z = load()
 
-    type_to_int = indexize(get_unique(Y).union(set(Z)))
+    # type_to_int = indexize(get_unique(Y).union(set(Z)))
+    type_to_int = indexize(get_unique(Y))
     type_to_int[None] = 0
     type_to_int['SOS'] = len(type_to_int) + 1
     # int_to_type = {v: k for k, v in type_to_int.items()}
     type_sequences = map_sequences_to_sequences(Y, type_to_int, map_type_sequence_to_index_sequence)
-    results = map_type_sequence_to_index_sequence(Z, type_to_int)
+    # results = map_type_sequence_to_index_sequence(Z, type_to_int)
 
-    if not os.path.isfile(vocab_path):
+    try:
+        if not os.path.isfile(vocab_path):
+            vectorize_words(X, fastText_path, model_path, storage_path, vocab_path)
+        word_to_vec = load_vectors(storage_path)
+
+        vector_sequences = map_sequences_to_sequences(X, word_to_vec, map_word_sequence_to_tensor_sequence)
+    except KeyError:
+        voc = get_unique(X)
+        write_vocab(voc, vocab_path)
         vectorize_words(X, fastText_path, model_path, storage_path, vocab_path)
-    word_to_vec = load_vectors(storage_path)
+        word_to_vec = load_vectors(storage_path)
+        vector_sequences = map_sequences_to_sequences(X, word_to_vec, map_word_sequence_to_tensor_sequence)
 
-    vector_sequences = map_sequences_to_sequences(X, word_to_vec, map_word_sequence_to_tensor_sequence)
-
-    return TLGDataset(vector_sequences, type_sequences, results, type_to_int)
+    return TLGDataset(vector_sequences, type_sequences, None, type_to_int)
 
 
 class TLGDataset(Dataset):
