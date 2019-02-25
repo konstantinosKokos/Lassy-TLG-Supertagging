@@ -35,7 +35,7 @@ class TypeLM(nn.Module):
                  device: str, dropout: float = 0.1, d_model: int = 300, shift: int=1,
                  activation: Callable[[FloatTensor], FloatTensor]=sigsoftmax) -> None:
         super(TypeLM, self).__init__()
-        self.embedding_matrix = torch.nn.Parameter(torch.rand(num_classes, d_model) * 0.02).to(device)
+        self.embedding_matrix = torch.nn.Parameter(torch.rand(num_classes, d_model, device=device) * 0.02)
         # self.embedding_matrix = torch.nn.Embedding(num_classes, d_model, padding_idx=0,
         #                                            scale_grad_by_freq=True).to(device)
         self.network = Encoder(num_layers=num_layers, num_heads=num_heads, d_model=d_model,
@@ -48,8 +48,10 @@ class TypeLM(nn.Module):
 
     def forward(self, x: LongTensor, mask: LongTensor) -> FloatTensor:
         x_embedded = F.embedding(x, self.embedding_matrix, padding_idx=0, scale_grad_by_freq=True)
+        b, n, dk = x_embedded.shape
+        pe = PE(b, n, dk, dk, device=self.device)
 
-        decoder_input = EncoderInput(encoder_input=x_embedded, mask=mask)
+        decoder_input = EncoderInput(encoder_input=x_embedded + pe, mask=mask)
         decoder_output = self.network(decoder_input)
         prediction = decoder_output.encoder_input@(self.embedding_matrix.transpose(1, 0) + 1e-10)
         # prediction = self.predictor(decoder_output.encoder_input)
@@ -132,16 +134,16 @@ def do_everything():
 
     d_model = 1024
     batch_size = 256
-    num_epochs = 1000
+    num_epochs = 500
 
     num_classes = len(type_dict) + 1
-    n = TypeLM(num_classes, 2, 4, 1024, 'cuda', 0.1, d_model)
+    n = TypeLM(num_classes, 3, 4, 1024, 'cuda', 0.15, d_model)
 
-    # L = FuzzyLoss(torch.nn.KLDivLoss(reduction='batchmean'), num_classes, 0.5, ignore_index=0)
-    L = torch.nn.NLLLoss(reduction='mean', ignore_index=0)
+    L = FuzzyLoss(torch.nn.KLDivLoss(reduction='batchmean'), num_classes, 0.5, ignore_index=0)
+    # L = torch.nn.NLLLoss(reduction='mean', ignore_index=0)
 
     o = optim.Adam(n.parameters(), lr=2e-04, betas=(0.9, 0.98), eps=1e-09)
-    o = CustomLRScheduler(o, noam_scheme, d_model=d_model, warmup_steps=4000, batch_size=batch_size * 2)
+    o = CustomLRScheduler(o, [noam_scheme], d_model=d_model, warmup_steps=4000, batch_size=batch_size * 4)
 
     splitpoint = int(np.floor(0.1 * len(type_sequences)))
 
@@ -187,6 +189,7 @@ def do_everything():
                     if btw/bw > best_val:
                         best_val = btw/bw
                         with open('stored_models/type_LM.p', 'wb') as f:
+                            print('Storing at epoch {}'.format(i))
                             torch.save(n.state_dict(), f)
             except KeyboardInterrupt:
                 return n, train_indices
@@ -196,5 +199,5 @@ def do_everything():
             #     with open('stored_models/type_LM.p', 'wb') as f:
             #         torch.save(n.state_dict(), f)
             # plt.close()
-            t.set_postfix(loss=loss, steps=steps, lr=o.lr, accuracy=train_acc, best_val=best_val)
+            t.set_postfix(loss=loss, steps=steps, lr=o.lrs[0], accuracy=train_acc, best_val=best_val)
     return n, train_indices
