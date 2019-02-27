@@ -1,5 +1,5 @@
-from Transformer.src.UniversalTransformer import UniversalTransformer as Transformer
-# from Transformer.src.Transformer import Transformer
+# from Transformer.src.UniversalTransformer import UniversalTransformer as Transformer
+from Transformer.src.Transformer import Transformer
 from Transformer.src.utils import FuzzyLoss, CustomLRScheduler, noam_scheme, Mask
 
 import torch
@@ -15,7 +15,7 @@ from src import DataPrep
 
 from typing import List, Any, Tuple, Union, Callable
 
-from tqdm import trange
+import pickle
 
 FloatTensor = Union[torch.cuda.FloatTensor, torch.FloatTensor]
 LongTensor = Union[torch.cuda.LongTensor, torch.LongTensor]
@@ -43,7 +43,8 @@ class Supertagger(nn.Module):
         self.num_classes = num_classes
         self.transformer = Transformer(num_classes=num_classes, num_heads=num_heads,
                                        encoder_layers=encoder_layers, decoder_layers=decoder_layers, d_model=d_model,
-                                       d_intermediate=d_intermediate, dropout=dropout, device=device)
+                                       d_intermediate=d_intermediate, dropout=dropout, device=device,
+                                       reuse_embedding=True)
         self.device = device
 
     def forward(self, encoder_input: FloatTensor, decoder_input: FloatTensor, encoder_mask: LongTensor,
@@ -74,10 +75,9 @@ class Supertagger(nn.Module):
             batch_y = pad_sequence(batch_y, batch_first=True).long().to(self.device)
             batch_e = F.embedding(batch_y.to(self.device), self.transformer.embedding_matrix)
 
-            encoder_mask = torch.ones(batch_y.shape[0], batch_y.shape[1], batch_y.shape[1])
+            encoder_mask = torch.ones(batch_y.shape[0], batch_y.shape[1], batch_x.shape[1])
             for i, l in enumerate(lens):
-                encoder_mask[i, l::, :] = torch.zeros([1, batch_x.shape[1] - l, batch_x.shape[1]])
-                encoder_mask[i, :, l::] = torch.zeros([1, batch_x.shape[1], batch_x.shape[1] - l])
+                encoder_mask[i, :, l::] = torch.zeros([1, batch_y.shape[1], batch_x.shape[1] - l])
             encoder_mask = encoder_mask.to(self.device)
             decoder_mask = Mask((batch_x.shape[0], batch_x.shape[1], batch_x.shape[1])).to(self.device)
             # filter_unk = (batch_y == 0).unsqueeze(-1).repeat(1, 1, batch_x.shape[1])
@@ -156,7 +156,7 @@ class Supertagger(nn.Module):
                 batch_x = pad_sequence(batch_x, batch_first=True).to(self.device)
                 batch_y = pad_sequence(batch_y, batch_first=True).long().to(self.device)
 
-                encoder_mask = torch.ones(batch_y.shape[0], batch_y.shape[1], batch_y.shape[1])
+                encoder_mask = torch.ones(batch_x.shape[0], batch_x.shape[1], batch_x.shape[1])
                 for i, l in enumerate(lens):
                     encoder_mask[i, l::, :] = torch.zeros([1, batch_x.shape[1] - l, batch_x.shape[1]])
                     encoder_mask[i, :, l::] = torch.zeros([1, batch_x.shape[1], batch_x.shape[1] - l])
@@ -177,37 +177,58 @@ class Supertagger(nn.Module):
 
 
 def do_everything(tlg=None, train_indices=None):
+
     # 3,4,4,128,0.1,0.1,4000
     if tlg is None:
         tlg = DataPrep.do_everything_elmo()
 
     d_model = 1024
     batch_size = 128
-    beam_size = 5
+    beam_size = 3
 
     num_classes = len(tlg.type_dict) + 1
-    n = Supertagger(num_classes, 2, 5, 5, 1024, dropout=0.15, device='cuda', d_model=d_model)
-    with open('embedding_{}.torch'.format(d_model), 'rb') as f:
-        n.transformer.embedding_matrix.data = torch.nn.Parameter(torch.load(f).detach()).to('cuda')
+    n = Supertagger(num_classes, 3, 4, 4, 1024, dropout=0.15, device='cuda', d_model=d_model)
+    # with open('stored_models/type_LM.p', 'rb') as f:
+    #     self_dict = n.state_dict()
+    #     import re
+    #     pretrained = torch.load(f)
+    #     for k, p in pretrained.items():
+    #         k = re.sub(r'network', 'transformer.decoder', k)
+    #         k = re.sub(r'mha', 'mask_mha', k)
+    #         k = re.sub(r'embedding_matrix', 'transformer.embedding_matrix', k)
+    #         k = re.sub(r'predictor', 'transformer.predictor', k)
+    #         if k in self_dict.keys():
+    #             self_dict[k] = p
+    #             print('replaced {}'.format(k))
+    #         else:
+    #             continue
+    #     n.load_state_dict(self_dict)
+    #     del pretrained
+    # assert(all(list(map(lambda x: x.requires_grad, n.parameters()))))
 
     L = FuzzyLoss(torch.nn.KLDivLoss(reduction='batchmean'), num_classes, 0.1)
 
-    a = optim.Adam([{'params': list(n.parameters())[1:]}, {'params': n.transformer.embedding_matrix}],
-                   betas=(0.9, 0.98), eps=1e-09)
+    a = optim.Adam(n.parameters(), betas=(0.9, 0.98), eps=1e-09, weight_decay=1e-04)
+    # a = optim.Adam([{'params': list(n.parameters())[1:]}, {'params': n.transformer.embedding_matrix}],
+    #                betas=(0.9, 0.98), eps=1e-09)
 
     def var_rate(rate):
-        return lambda _step, d_model, warmup_steps, batch_size: noam_scheme(_step=_step, d_model=d_model,
-                                                                            warmup_steps=warmup_steps,
-                                                                            batch_size=rate*batch_size)
+        return lambda _step, d_model, warmup_steps, batch_size=2048: \
+            noam_scheme(_step=_step, d_model=d_model, warmup_steps=warmup_steps, batch_size=rate*batch_size)
 
-    o = CustomLRScheduler(a, [var_rate(1), var_rate(0.1)], d_model=d_model, warmup_steps=4000, batch_size=batch_size)
+    # o = CustomLRScheduler(a, [var_rate(1), var_rate(0.5)], d_model=d_model, warmup_steps=4000, batch_size=4*batch_size)
+    o = CustomLRScheduler(a, [noam_scheme], d_model=d_model, warmup_steps=4000, batch_size=4*batch_size)
 
     if train_indices is None:
-        splitpoint = int(np.floor(0.1*len(tlg)))
-        indices = list(range(len(tlg)))
-        np.random.shuffle(indices)
-        train_indices, val_indices = indices[splitpoint:], indices[:splitpoint]
+        # splitpoint = int(np.floor(0.1*len(tlg)))
+        # indices = list(range(len(tlg)))
+        # np.random.shuffle(indices)
+        # train_indices, val_indices = indices[splitpoint:], indices[:splitpoint]
+        with open('ti.p', 'rb') as f:
+            train_indices = pickle.load(f)
+        val_indices = list(filter(lambda x: x not in train_indices, list(range(len(tlg)))))
         val_indices = sorted(val_indices, key=lambda idx: tlg[idx][0].shape[0])
+
     else:
         val_indices = list(filter(lambda x: x not in train_indices, list(range(len(tlg)))))
 
