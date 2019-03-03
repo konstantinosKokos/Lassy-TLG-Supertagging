@@ -121,24 +121,25 @@ def type_language_model(data_path='data/XYZ.p') -> Tuple[Sequence[Tensor], Dict[
 
     _, Y, _, type_to_int = load(data_path)
     type_to_int['SOS'] = len(type_to_int) + 1
-    occurrences = count_occurrences(Y)
-    occurrences = freqsort(occurrences, type_to_int)
+
     type_sequences = map_sequences_to_sequences(Y, type_to_int, map_type_sequence_to_index_sequence)
     type_sequences = tuple(map(lambda x: torch.cat([torch.tensor([type_to_int['SOS']], dtype=torch.long),
                                                     torch.cat(x)]), type_sequences))
-    return type_sequences, type_to_int, occurrences
+    return type_sequences, type_to_int
 
 
-def do_everything_elmo():
-    model_path = '/home/kokos/Documents/Projects/Lassy/LassySupertagging/ELMoForManyLangs/Models/Dutch'
-    X, Y, Z, type_to_int = load('data/XYZ.p')
+def do_everything_elmo(model_path
+                       : str='/home/kokos/Documents/Projects/Lassy/LassySupertagging/ELMoForManyLangs/Models/Dutch',
+                       data_file: str='data/XYZ.p',
+                       ):
+    X, Y, Z, type_to_int = load(data_file)
     type_to_int['SOS'] = len(type_to_int) + 1
     type_sequences = map_sequences_to_sequences(Y, type_to_int, map_type_sequence_to_index_sequence)
     from ELMoForManyLangs.elmoformanylangs import Embedder
     ELMO = Embedder(model_path)
     vector_sequences = list(map(torch.tensor, ELMO.sents2elmo(X)))
 
-    vector_sequences = tuple(map(lambda x: torch.cat([x, torch.zeros([1, x.shape[1]])]), vector_sequences))
+    vector_sequences = tuple(map(lambda x: torch.cat([torch.zeros([1, x.shape[1]]), x]), vector_sequences))
     type_sequences = tuple(map(lambda x: torch.cat([torch.tensor([type_to_int['SOS']]),
                                                     torch.tensor(x, dtype=torch.long)]),
                                type_sequences))
