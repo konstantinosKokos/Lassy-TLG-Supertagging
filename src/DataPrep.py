@@ -117,8 +117,17 @@ def do_everything(fastText_path='/home/kokos/Documents/Projects/FastText/fastTex
     return TLGDataset(vector_sequences, type_sequences, None, type_to_int)
 
 
-def type_language_model(data_path='data/XYZ.p') -> Tuple[Sequence[Tensor], Dict[WordType.WordType, int]]:
+def atomic_type_language_model(data_path='data/symbols.p') -> Tuple[Sequence[Tensor], Dict[int, int]]:
+    with open(data_path, 'rb') as f:
+        type_to_int, int_to_type, Yp_enc = pickle.load(f)
+    type_to_int['<SOS>'] = len(type_to_int) + 1
+    type_sequences = tuple(map(lambda x: torch.cat([torch.tensor([type_to_int['<SOS>']], dtype=torch.long),
+                                                    torch.tensor(x)]), Yp_enc))
+    return type_sequences, type_to_int
 
+
+
+def type_language_model(data_path='data/XYZ.p') -> Tuple[Sequence[Tensor], Dict[WordType.WordType, int]]:
     _, Y, _, type_to_int = load(data_path)
     type_to_int['SOS'] = len(type_to_int) + 1
 
@@ -139,7 +148,7 @@ def do_everything_elmo(model_path
     ELMO = Embedder(model_path)
     vector_sequences = list(map(torch.tensor, ELMO.sents2elmo(X)))
 
-    vector_sequences = tuple(map(lambda x: torch.cat([torch.zeros([1, x.shape[1]]), x]), vector_sequences))
+    vector_sequences = tuple(map(lambda x: torch.cat([x, torch.zeros([1, x.shape[1]])]), vector_sequences))
     type_sequences = tuple(map(lambda x: torch.cat([torch.tensor([type_to_int['SOS']]),
                                                     torch.tensor(x, dtype=torch.long)]),
                                type_sequences))

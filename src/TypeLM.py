@@ -42,12 +42,14 @@ class TypeLM(nn.Module):
                                d_k=d_model//num_heads, d_v=d_model//num_heads,
                                d_intermediate=d_intermediate, dropout=dropout).to(device)
         # self.predictor = torch.nn.Linear(d_model, num_classes).to(device)
+        self.dropout_rate = dropout
         self.device = device
         self.activation = activation
         self.shift = shift
 
     def forward(self, x: LongTensor, mask: LongTensor) -> FloatTensor:
         x_embedded = F.embedding(x, self.embedding_matrix, padding_idx=0, scale_grad_by_freq=True)
+        x_embedded = F.dropout(x_embedded, p=self.dropout_rate, training=self.training)
         b, n, dk = x_embedded.shape
         pe = PE(b, n, dk, dk, device=self.device)
 
@@ -98,7 +100,8 @@ class TypeLM(nn.Module):
 
         return loss, BS, BTS, BW, BTW, steps_taken
 
-    def eval_epoch(self, X: Sequence[LongTensor], batch_size: int, val_indices: List[int]) -> Any:
+    def eval_epoch(self, X: Sequence[LongTensor], batch_size: int,
+                   criterion: Callable[[FloatTensor, LongTensor], FloatTensor], val_indices: List[int]) -> Any:
         self.eval()
 
         with torch.no_grad():
@@ -107,6 +110,8 @@ class TypeLM(nn.Module):
 
             batch_start = 0
             BS, BTS, BW, BTW = 0, 0, 0, 0
+
+            loss = 0.
 
             while batch_start < len(permutation):
                 batch_end = min(batch_size + batch_start, len(permutation))
@@ -117,6 +122,7 @@ class TypeLM(nn.Module):
                 encoder_mask = Mask((batch_x.shape[0], batch_x.shape[1], batch_x.shape[1])).to(self.device)
 
                 batch_p = self.forward(batch_x, encoder_mask)
+                loss += criterion(batch_p[:, :-1].permute(0, 2, 1), batch_x[:, 1:]).item()
 
                 (bs, bts), (bw, btw) = accuracy(batch_p[:, :-1].argmax(dim=-1), batch_x[:, 1:], 0)
                 BS += bs
@@ -126,78 +132,88 @@ class TypeLM(nn.Module):
 
                 batch_start += batch_size
 
-            return BS, BTS, BW, BTW
+            return loss, BS, BTS, BW, BTW
 
 
-def do_everything():
-    type_sequences, type_dict, occurrences = DataPrep.type_language_model()
+def atomic_do_everything(data_path='data/symbols.p'):
+    type_sequences, type_dict = DataPrep.atomic_type_language_model(data_path)
 
-    d_model = 1024
+    d_model = 300
+    batch_size = 64
+    num_epochs = 500
+
+    num_classes = len(type_dict) + 1
+    n = TypeLM(num_classes, 1, 1, 300, 'cuda', 0.2, d_model)
+
+    L = FuzzyLoss(torch.nn.KLDivLoss(reduction='batchmean'), num_classes, 0.1, ignore_index=0)
+
+    o = optim.Adam(n.parameters(), lr=2e-04, betas=(0.9, 0.98), eps=1e-09, weight_decay=1e-04)
+    o = CustomLRScheduler(o, [noam_scheme], d_model=d_model, warmup_steps=4000, batch_size=batch_size * 8)
+
+    train_indices = list(range(len(type_sequences)))
+
+    steps = 0
+
+    with trange(num_epochs) as t:
+        for i in t:
+            try:
+                loss, bs, bts, bw, btw, steps = n.train_epoch(type_sequences, batch_size, L, o, train_indices,
+                                                              steps_taken=steps)
+                train_acc = btw / bw
+
+            except KeyboardInterrupt:
+                return n
+
+            t.set_postfix(loss=loss, accuracy=train_acc, steps=steps, lr=o.lrs[0])
+    return n
+
+
+def do_everything(data_path='data/XYZ_ccg.p', split_path='split_ccg.p', store_path='stored_models/type_LM_ccg.p'):
+    type_sequences, type_dict = DataPrep.type_language_model(data_path)
+
+    d_model = 300
     batch_size = 256
     num_epochs = 500
 
     num_classes = len(type_dict) + 1
-    n = TypeLM(num_classes, 3, 4, 1024, 'cuda', 0.15, d_model)
+    n = TypeLM(num_classes, 4, 6, 300, 'cuda', 0.2, d_model)
 
-    L = FuzzyLoss(torch.nn.KLDivLoss(reduction='batchmean'), num_classes, 0.5, ignore_index=0)
-    # L = torch.nn.NLLLoss(reduction='mean', ignore_index=0)
+    L = FuzzyLoss(torch.nn.KLDivLoss(reduction='batchmean'), num_classes, 0.1, ignore_index=0)
 
-    o = optim.Adam(n.parameters(), lr=2e-04, betas=(0.9, 0.98), eps=1e-09)
-    o = CustomLRScheduler(o, [noam_scheme], d_model=d_model, warmup_steps=4000, batch_size=batch_size * 4)
+    o = optim.Adam(n.parameters(), lr=2e-04, betas=(0.9, 0.98), eps=1e-09, weight_decay=1e-04)
+    o = CustomLRScheduler(o, [noam_scheme], d_model=d_model, warmup_steps=4000, batch_size=batch_size * 8)
 
-    splitpoint = int(np.floor(0.1 * len(type_sequences)))
+    with open(split_path, 'rb') as f:
+        train_indices, val_indices, _ = pickle.load(f)
 
-    indices = list(range(len(type_sequences)))
-    np.random.shuffle(indices)
-    train_indices, val_indices = indices[splitpoint:], indices[:splitpoint]
-    val_indices = sorted(val_indices, key=lambda idx: len(type_sequences[idx]))
+    resplit = 0.75
+    val_indices = val_indices + train_indices[int(np.floor(resplit*len(train_indices))):]
+    train_indices = train_indices[:int(np.ceil(resplit * len(train_indices)))]
 
+    v_loss = None
     best_val = None
     steps = 0
-
-    # N = 500
-    # top_N = list(map(lambda x: x[0], occurrences[:N]))
-    # top_N_labels = list(map(lambda x: str(x[1]), occurrences[:N]))
-    # with open('labels.tsv', 'w') as f:
-    #     cw = csv.writer(f)
-    #     for item in top_N_labels:
-    #         cw.writerow(item)
-    # exit()
-    # top_N = torch.tensor(top_N, device='cuda')
+    v_accuracy = None
 
     with trange(num_epochs) as t:
         for i in t:
-            # e = n.embedding_matrix(top_N).detach().to('cpu').numpy()
-            # e = manifold.TSNE(2, early_exaggeration=24, n_iter=10000, perplexity=30).fit_transform(e)
-            # first = list(map(lambda x: x[0], e))
-            # second = list(map(lambda x: x[1], e))
-            # # third = list(map(lambda x: x[2], e))
-            # #
-            # plt.figure(figsize=(11, 11))
-            # plt.scatter(first, second)
-            # plt.show()
-            # plt.pause(0.02)
-
             try:
                 loss, bs, bts, bw, btw, steps = n.train_epoch(type_sequences, batch_size, L, o, train_indices,
                                                               steps_taken=steps)
                 train_acc = btw/bw
                 if i % 5 == 0 and i > 0:
-                    bs, bts, bw, btw = n.eval_epoch(type_sequences, batch_size, val_indices)
+                    v_loss, val_bs, val_bts, val_bw, val_btw = n.eval_epoch(type_sequences, batch_size, L, val_indices)
+                    v_accuracy = val_btw/val_bw
                     if best_val is None:
-                        best_val = btw/bw
-                    if btw/bw > best_val:
-                        best_val = btw/bw
-                        with open('stored_models/type_LM.p', 'wb') as f:
-                            print('Storing at epoch {}'.format(i))
+                        best_val = v_loss
+                    if v_loss < best_val:
+                        best_val = v_loss
+                        with open(store_path, 'wb') as f:
+                            print('Storing at epoch {}'.format(i, v_loss))
                             torch.save(n.state_dict(), f)
             except KeyboardInterrupt:
-                return n, train_indices
+                return n
 
-            # if btw / bw > best_val:
-            #     best_val = btw / bw
-            #     with open('stored_models/type_LM.p', 'wb') as f:
-            #         torch.save(n.state_dict(), f)
-            # plt.close()
-            t.set_postfix(loss=loss, steps=steps, lr=o.lrs[0], accuracy=train_acc, best_val=best_val)
-    return n, train_indices
+            t.set_postfix(loss=loss, v_loss=v_loss, best_v_loss=best_val, accuracy=train_acc, v_accuracy=v_accuracy,
+                          steps=steps, lr=o.lrs[0])
+    return n
