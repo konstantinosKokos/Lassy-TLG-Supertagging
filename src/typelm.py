@@ -1,6 +1,7 @@
 from Transformer.src.utils import (FuzzyLoss, CustomLRScheduler, noam_scheme, Mask, PE, DecoderInput, sigsoftmax,
                                    EncoderInput)
 from Transformer.src.Transformer import Encoder
+from Transformer.src.utils import ScaledDotProduct
 from src.Network import accuracy
 
 from LassyExtraction.src.utils.PostProcess import count_occurrences, freqsort
@@ -22,12 +23,43 @@ from torch.nn.utils.rnn import pad_sequence
 
 import numpy as np
 
-from src import DataPrep
+from src import dataprep
 
 from typing import List, Any, Sequence, Union, Callable
 
 FloatTensor = Union[torch.cuda.FloatTensor, torch.FloatTensor]
 LongTensor = Union[torch.cuda.LongTensor, torch.LongTensor]
+
+
+# class AtomicTypeLM(nn.Module):
+#     def __init__(self, num_classes: int, d_model: int, device: str):
+#         super(AtomicTypeLM, self).__init__()
+#         self.device = device
+#         self.embedding_matrix_k = torch.nn.Parameter(torch.rand(num_classes, d_model, device=device) * 0.02)
+#         self.embedding_matrix_k = torch.nn.Parameter(torch.rand(num_classes, d_model, device=device) * 0.02)
+#         self.embedding_matrix_k = torch.nn.Parameter(torch.rand(num_classes, d_model, device=device) * 0.02)
+#
+#     def forward(self, x: LongTensor, mask: LongTensor):
+#         k = self.embedding_matrix_k(x)
+#         q = self.embedding_matrix_k(x)
+#         v = self.embedding_matrix_k(x)
+#         b, n, dk = k.shape
+#         pe = PE(b, n, dk, dk, device=self.device)
+#
+#         atn = ScaledDotProduct(q + pe, k + pe, v + pe, mask)
+#
+#         return torch.log(sigsoftmax(atn@self.embedding_matrix_k.transpose(1, 0) + 1e-10))
+#
+#     def train_batch(self, batch_x: LongTensor, encoder_mask: LongTensor,
+#                     criterion: Callable[[FloatTensor, LongTensor], FloatTensor], optimizer: optim.Optimizer) -> Any:
+#         optimizer.zero_grad()
+#         batch_p = self.forward(batch_x, encoder_mask)
+#         batch_loss = criterion(batch_p[:, :-1].permute(0, 2, 1), batch_x[:, 1:])
+#         batch_loss.backward()
+#         optimizer.step()
+#         return batch_p.detach(), batch_loss.item()
+#
+#     def train_epoch(self):
 
 
 class TypeLM(nn.Module):
@@ -136,19 +168,20 @@ class TypeLM(nn.Module):
 
 
 def atomic_do_everything(data_path='data/symbols.p'):
-    type_sequences, type_dict = DataPrep.atomic_type_language_model(data_path)
+    # type_sequences, type_dict = DataPrep.atomic_type_language_model(data_path)
+    type_sequences, type_dict = dataprep.bpe_type_language_model()
 
     d_model = 300
-    batch_size = 64
+    batch_size = 128
     num_epochs = 500
 
     num_classes = len(type_dict) + 1
-    n = TypeLM(num_classes, 1, 1, 300, 'cuda', 0.2, d_model)
+    n = TypeLM(num_classes, 4, 4, 300, 'cuda', 0.5, d_model)
 
-    L = FuzzyLoss(torch.nn.KLDivLoss(reduction='batchmean'), num_classes, 0.1, ignore_index=0)
+    L = FuzzyLoss(torch.nn.KLDivLoss(reduction='batchmean'), num_classes, 0.5, ignore_index=0)
 
     o = optim.Adam(n.parameters(), lr=2e-04, betas=(0.9, 0.98), eps=1e-09, weight_decay=1e-04)
-    o = CustomLRScheduler(o, [noam_scheme], d_model=d_model, warmup_steps=4000, batch_size=batch_size * 8)
+    o = CustomLRScheduler(o, [noam_scheme], d_model=d_model, warmup_steps=4000)
 
     train_indices = list(range(len(type_sequences)))
 
@@ -169,7 +202,7 @@ def atomic_do_everything(data_path='data/symbols.p'):
 
 
 def do_everything(data_path='data/XYZ_ccg.p', split_path='split_ccg.p', store_path='stored_models/type_LM_ccg.p'):
-    type_sequences, type_dict = DataPrep.type_language_model(data_path)
+    type_sequences, type_dict = dataprep.type_language_model(data_path)
 
     d_model = 300
     batch_size = 256

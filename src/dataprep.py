@@ -7,7 +7,7 @@ import pickle
 
 sys.modules['src.WordType'] = WordType
 
-from typing import Iterable, Dict, Set, TypeVar, Callable, Tuple, List, Sequence
+from typing import Iterable, Dict, Set, TypeVar, Callable, Tuple, List, Sequence, Any
 import subprocess
 import io
 
@@ -82,18 +82,58 @@ def load_vectors(fname: str) -> Dict[str, Tensor]:
     return ret
 
 
-def do_everything(fastText_path='/home/kokos/Documents/Projects/FastText/fastText-0.1.0/fasttext',
+def bpe_type_language_model(data_path='data/XYZ_m.p') -> Tuple[Sequence[Tensor], Dict[int, int]]:
+    with open(data_path, 'rb') as f:
+        _, Yp_enc, type_to_int = pickle.load(f)
+    type_to_int['<SOS>'] = len(type_to_int)
+    type_sequences = tuple(map(lambda x: torch.cat([torch.tensor([type_to_int['<SOS>']], dtype=torch.long),
+                                                    torch.tensor(x).view(-1)]), Yp_enc))
+    return type_sequences, type_to_int
+
+
+def atomic_type_language_model(data_path='data/symbols.p') -> Tuple[Sequence[Tensor], Dict[int, int]]:
+    with open(data_path, 'rb') as f:
+        int_to_type, type_to_int, Yp_enc = pickle.load(f)
+    type_to_int['<SOS>'] = len(type_to_int)
+    int_to_type[len(int_to_type)] = '<SOS>'
+    type_sequences = tuple(map(lambda x: torch.cat([torch.tensor([type_to_int['<SOS>']], dtype=torch.long),
+                                                    torch.tensor(x)]), Yp_enc))
+    return type_sequences, type_to_int
+
+
+def type_language_model(data_path='data/XYZ.p') -> Tuple[Sequence[Tensor], Dict[WordType.WordType, int]]:
+    _, Y, _, type_to_int = load(data_path)
+    type_to_int['SOS'] = len(type_to_int)
+
+    type_sequences = map_sequences_to_sequences(Y, type_to_int, map_type_sequence_to_index_sequence)
+    type_sequences = tuple(map(lambda x: torch.cat([torch.tensor([type_to_int['SOS']], dtype=torch.long),
+                                                    torch.cat(x)]), type_sequences))
+    return type_sequences, type_to_int
+
+
+def bpe_elmo(model_path: str='/home/kokos/Documents/Projects/Lassy/LassySupertagging/ELMoForManyLangs/Models/Dutch',
+             data_path: str='data/XY_atomic_short.p') -> 'TLGDataset':
+    with open(data_path, 'rb') as f:
+        X, Yp_enc, type_to_int = pickle.load(f)
+    type_to_int['<SOS>'] = len(type_to_int)
+    type_sequences = tuple(map(lambda x: torch.cat([torch.tensor([type_to_int['<SOS>']], dtype=torch.long),
+                                                    torch.tensor(x).view(-1)]), Yp_enc))
+    from ELMoForManyLangs.elmoformanylangs import Embedder
+    ELMO = Embedder(model_path)
+    vector_sequences = list(map(torch.tensor, ELMO.sents2elmo(X)))
+    return TLGDataset(vector_sequences, type_sequences, type_to_int)
+
+
+def bpe_ft(fastText_path='/home/kokos/Documents/Projects/FastText/fastText-0.1.0/fasttext',
                   model_path='/home/kokos/Documents/Projects/FastText/fastText-0.1.0/models/wiki.nl.bin',
                   storage_path='data/vectors.vec',
                   vocab_path='data/vocabulary.voc',
-                  data_path='data/XYZ.p') -> Dataset:
-
-    X, Y, Z, type_to_int = load(data_path)
-
-    type_to_int['SOS'] = len(type_to_int) + 1
-    # int_to_type = {v: k for k, v in type_to_int.items()}
-    type_sequences = map_sequences_to_sequences(Y, type_to_int, map_type_sequence_to_index_sequence)
-    # results = map_type_sequence_to_index_sequence(Z, type_to_int)
+                  data_path='data/XYZ_m.p') -> 'TLGDataset':
+    with open(data_path, 'rb') as f:
+        X, Yp_enc, type_to_int = pickle.load(f)
+    type_to_int['<SOS>'] = len(type_to_int)
+    type_sequences = tuple(map(lambda x: torch.cat([torch.tensor([type_to_int['<SOS>']], dtype=torch.long),
+                                                    torch.tensor(x).view(-1)]), Yp_enc))
 
     try:
         if not os.path.isfile(vocab_path):
@@ -108,33 +148,9 @@ def do_everything(fastText_path='/home/kokos/Documents/Projects/FastText/fastTex
         word_to_vec = load_vectors(storage_path)
         vector_sequences = map_sequences_to_sequences(X, word_to_vec, map_word_sequence_to_tensor_sequence)
 
-    vector_sequences = tuple(map(lambda x: torch.cat([torch.cat(x), torch.zeros([1, x[0].shape[1]])]),
-                                 vector_sequences))
-    type_sequences = tuple(map(lambda x: torch.cat([torch.tensor([type_to_int['SOS']], dtype=torch.long),
-                                                    torch.cat(x)]),
-                               type_sequences))
+    vector_sequences = tuple(map(lambda x: torch.cat(x), vector_sequences))
 
-    return TLGDataset(vector_sequences, type_sequences, None, type_to_int)
-
-
-def atomic_type_language_model(data_path='data/symbols.p') -> Tuple[Sequence[Tensor], Dict[int, int]]:
-    with open(data_path, 'rb') as f:
-        type_to_int, int_to_type, Yp_enc = pickle.load(f)
-    type_to_int['<SOS>'] = len(type_to_int) + 1
-    type_sequences = tuple(map(lambda x: torch.cat([torch.tensor([type_to_int['<SOS>']], dtype=torch.long),
-                                                    torch.tensor(x)]), Yp_enc))
-    return type_sequences, type_to_int
-
-
-
-def type_language_model(data_path='data/XYZ.p') -> Tuple[Sequence[Tensor], Dict[WordType.WordType, int]]:
-    _, Y, _, type_to_int = load(data_path)
-    type_to_int['SOS'] = len(type_to_int) + 1
-
-    type_sequences = map_sequences_to_sequences(Y, type_to_int, map_type_sequence_to_index_sequence)
-    type_sequences = tuple(map(lambda x: torch.cat([torch.tensor([type_to_int['SOS']], dtype=torch.long),
-                                                    torch.cat(x)]), type_sequences))
-    return type_sequences, type_to_int
+    return TLGDataset(vector_sequences, type_sequences, type_to_int)
 
 
 def do_everything_elmo(model_path
@@ -142,7 +158,7 @@ def do_everything_elmo(model_path
                        data_file: str='data/XYZ.p',
                        ):
     X, Y, Z, type_to_int = load(data_file)
-    type_to_int['SOS'] = len(type_to_int) + 1
+    type_to_int['SOS'] = len(type_to_int)
     type_sequences = map_sequences_to_sequences(Y, type_to_int, map_type_sequence_to_index_sequence)
     from ELMoForManyLangs.elmoformanylangs import Embedder
     ELMO = Embedder(model_path)
@@ -156,12 +172,10 @@ def do_everything_elmo(model_path
 
 
 class TLGDataset(Dataset):
-    def __init__(self, X: Sequence[Tensor], Y: Sequence[Tensor],
-                 Z: Sequence[int], type_to_int: Dict[WordType.WordType, int]) -> None:
+    def __init__(self, X: Sequence[Tensor], Y: Sequence[Tensor], type_to_int: Dict[Any, int]) -> None:
         super(TLGDataset, self).__init__()
         self.X = X
         self.Y = Y
-        self.Z = Z
         self.type_dict = type_to_int
 
     def __len__(self) -> int:
