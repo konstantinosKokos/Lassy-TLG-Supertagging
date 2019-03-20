@@ -1,15 +1,17 @@
 from src import dataprep
-import torch
 from Transformer.src.utils import FuzzyLoss, CustomLRScheduler, noam_scheme, Mask
-import pickle
 from src.supertagger import Supertagger
 
+import torch
 import numpy as np
 
-from typing import List
-
+from typing import List, Set
 from itertools import chain
 
+import pickle
+import os
+
+from collections import Counter
 
 def bpe_elmo(data_path='data/XY_atomic_short'):
     tlg = dataprep.bpe_elmo(data_path=data_path + '.p')
@@ -24,7 +26,7 @@ def bpe_elmo(data_path='data/XY_atomic_short'):
     n = Supertagger(num_classes, 3, 8, 1, 2, 1024, dropout=0.2, device='cuda', d_model=d_model)
 
     L = FuzzyLoss(torch.nn.KLDivLoss(reduction='batchmean'), num_classes, 0.15)
-    a = optim.Adam(n.parameters(), betas=(0.9, 0.98), eps=1e-09)
+    a = torch.optim.Adam(n.parameters(), betas=(0.9, 0.98), eps=1e-09)
     o = CustomLRScheduler(a, [noam_scheme], d_model=d_model, warmup_steps=4000)
 
     if os.path.isfile(split_path):
@@ -72,8 +74,8 @@ def bpe_evaluation():
     data_path = 'data/XY_atomic_short'
     split_path = data_path + '_split.p'
     store_path = 'stored_models/bpe_elmo.p'
-    data_path = data_path + '.p'
     result_path = data_path + '_results.tsv'
+    data_path = data_path + '.p'
 
     with open(split_path, 'rb') as f:
         train_indices, val_indices, test_indices = pickle.load(f)
@@ -102,21 +104,41 @@ def bpe_evaluation():
 
     def convert_ints_to_types(y: List[int]) -> List[str]:
         return list(map(lambda i: int_to_type[i], y))
+
     def remove_te(y: List[str]) -> List[str]:
         return (' '.join(y) + ' ').split(' <TE> ')[:-1]
+
     def tab_separate(y: List[str]) -> str:
         return '\t'.join(y)
+
     def process(y: List[int]) -> str:
         return tab_separate(remove_te(convert_ints_to_types(y)))
 
     Y_test_ = list(map(process, Y_test))
     P_test_ = list(map(process, P_test))
 
-    def interleave(x: List[List[str]], y: List[str]) -> List[str]:
-        x = list(map(lambda p: '\t'.join(p), x))
-        return [y[i//2] if i % 2 else x[i//2] for i in range(2*len(x))]
+    unique_type_sequences = set(list(chain.from_iterable(map(lambda y: remove_te(convert_ints_to_types(y)), Y_train))))
 
-    XY_test_ = interleave(X_test, Y_test_)
+    def get_unique(p: str) -> List[str]:
+        return list(filter(lambda x: x not in unique_type_sequences, p.split('\t')))
+
+    def all_unique(p: List[str]):
+        return Counter((chain.from_iterable(list(map(get_unique, P_test_)))))
+
+
+
+    def interleave(x: List[List[str]], y: List[str], p: List[str]) -> List[str]:
+        x = list(map(lambda p: '\t'.join(p), x))
+        ret = []
+        for i in range(len(x)):
+            ret.append(x[i])
+            ret.append(y[i])
+            ret.append(p[i])
+        return ret
+
+    XYP_test_ = interleave(X_test, Y_test_, P_test_)
 
     def store(x: List[str]) -> None:
-        np.savetxt(result_path, np.array(XY_test_, dtype=object), fmt='%s')
+        np.savetxt(result_path, np.array(x, dtype=object), fmt='%s')
+
+    store(XYP_test_)
