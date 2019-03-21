@@ -13,6 +13,7 @@ import os
 
 from collections import Counter
 
+
 def bpe_elmo(data_path='data/XY_atomic_short'):
     tlg = dataprep.bpe_elmo(data_path=data_path + '.p')
     split_path = data_path + '_split.p'
@@ -25,7 +26,7 @@ def bpe_elmo(data_path='data/XY_atomic_short'):
     num_classes = len(tlg.type_dict) + 1
     n = Supertagger(num_classes, 3, 8, 1, 2, 1024, dropout=0.2, device='cuda', d_model=d_model)
 
-    L = FuzzyLoss(torch.nn.KLDivLoss(reduction='batchmean'), num_classes, 0.15)
+    L = FuzzyLoss(torch.nn.KLDivLoss(reduction='batchmean'), num_classes, 0.2)
     a = torch.optim.Adam(n.parameters(), betas=(0.9, 0.98), eps=1e-09)
     o = CustomLRScheduler(a, [noam_scheme], d_model=d_model, warmup_steps=4000)
 
@@ -75,6 +76,7 @@ def bpe_evaluation():
     split_path = data_path + '_split.p'
     store_path = 'stored_models/bpe_elmo.p'
     result_path = data_path + '_results.tsv'
+    new_path = data_path + '_new.tsv'
     data_path = data_path + '.p'
 
     with open(split_path, 'rb') as f:
@@ -116,29 +118,42 @@ def bpe_evaluation():
 
     Y_test_ = list(map(process, Y_test))
     P_test_ = list(map(process, P_test))
+    Y_train_ = list(map(process, Y_train))
 
     unique_type_sequences = set(list(chain.from_iterable(map(lambda y: remove_te(convert_ints_to_types(y)), Y_train))))
 
     def get_unique(p: str) -> List[str]:
         return list(filter(lambda x: x not in unique_type_sequences, p.split('\t')))
 
+    def unique_and_true(y: str, p:str):
+        y = y.split('\t')
+        p = p.split('\t')
+        return list(filter(lambda x: x[1] not in unique_type_sequences and x[0]==x[1], zip(y, p)))
+
     def all_unique(p: List[str]):
-        return Counter((chain.from_iterable(list(map(get_unique, P_test_)))))
+        return Counter((chain.from_iterable(list(map(get_unique, p)))))
 
-
-
-    def interleave(x: List[List[str]], y: List[str], p: List[str]) -> List[str]:
-        x = list(map(lambda p: '\t'.join(p), x))
+    def interleave(X: List[List[str]]) -> List[str]:
         ret = []
-        for i in range(len(x)):
-            ret.append(x[i])
-            ret.append(y[i])
-            ret.append(p[i])
+        for i in range(len(X[0])):
+            for j in range(len(X)):
+                ret.append(X[j][i])
         return ret
 
-    XYP_test_ = interleave(X_test, Y_test_, P_test_)
+    X_test_ = list(map(lambda x: list(map(lambda w: w.encode('latin-1', 'replace').decode('latin-1'), x)), X_test))
+    X_test_ = list(map(lambda p: '\t'.join(p), X_test_))
 
-    def store(x: List[str]) -> None:
-        np.savetxt(result_path, np.array(x, dtype=object), fmt='%s')
+    new_indices = [i for i in range(len(Y_test_)) if unique_and_true(Y_test_[i], P_test_[i])]
+    X_new_ = [X_test_[i] for i in new_indices]
+    Y_new_ = [Y_test_[i] for i in new_indices]
+    P_new_ = [P_test_[i] for i in new_indices]
+    new_new_ = ['\t'.join(['1' if x not in unique_type_sequences else '0' for x in p.split('\t')]) for p in P_new_]
+    XYP_new_ = interleave([X_new_, Y_new_, P_new_, new_new_])
 
-    store(XYP_test_)
+    XYP_test_ = interleave([X_test_, Y_test_, P_test_])
+
+    def store(x: List[str], path: str) -> None:
+        np.savetxt(path, np.array(x, dtype=object), fmt='%s')
+
+    store(XYP_test_, result_path)
+    store(XYP_new_, new_path)
