@@ -5,13 +5,15 @@ from src.supertagger import Supertagger
 import torch
 import numpy as np
 
-from typing import List, Set
+from typing import List, Optional
 from itertools import chain
 
 import pickle
 import os
 
 from collections import Counter
+
+snd = lambda x: x[1]
 
 
 def bpe_elmo(data_path='data/XY_atomic_short'):
@@ -122,32 +124,34 @@ def bpe_evaluation():
 
     unique_type_sequences = set(list(chain.from_iterable(map(lambda y: remove_te(convert_ints_to_types(y)), Y_train))))
 
-    def get_unique(p: str) -> List[str]:
-        return list(filter(lambda x: x not in unique_type_sequences, p.split('\t')))
+    def get_unique(y: str, p: str) -> List[str]:
+        return list(map(snd,
+                        list(filter(lambda x: x[1] not in unique_type_sequences, zip(y.split('\t'), p.split('\t'))))))
 
-    def unique_and_true(y: str, p:str):
+    def get_unique_counts(y: str, p: str):
+        return Counter(list(map(lambda x: x[0],
+                                list(filter(lambda x: x, list(chain((map(get_unique, y, p)))))))))
+
+    def unique_and_true(y: str, p: str):
         y = y.split('\t')
         p = p.split('\t')
-        return list(filter(lambda x: x[1] not in unique_type_sequences and x[0]==x[1], zip(y, p)))
+        return list(filter(lambda x: x[1] not in unique_type_sequences and x[0] == x[1], zip(y, p)))
 
-    def all_unique(p: List[str]):
-        return Counter((chain.from_iterable(list(map(get_unique, p)))))
+    def all_unique(y: List[str], p: List[str]):
+        return Counter((chain.from_iterable(list(map(get_unique, y, p)))))
 
     def interleave(X: List[List[str]]) -> List[str]:
-        ret = []
-        for i in range(len(X[0])):
-            for j in range(len(X)):
-                ret.append(X[j][i])
-        return ret
+        return [X[j][i] for i in range(len(X[0])) for j in range(len(X))]
 
     X_test_ = list(map(lambda x: list(map(lambda w: w.encode('latin-1', 'replace').decode('latin-1'), x)), X_test))
     X_test_ = list(map(lambda p: '\t'.join(p), X_test_))
 
-    new_indices = [i for i in range(len(Y_test_)) if unique_and_true(Y_test_[i], P_test_[i])]
+    new_indices = [i for i in range(len(Y_test_)) if get_unique(Y_test_[i], P_test_[i])]
     X_new_ = [X_test_[i] for i in new_indices]
     Y_new_ = [Y_test_[i] for i in new_indices]
     P_new_ = [P_test_[i] for i in new_indices]
-    new_new_ = ['\t'.join(['1' if x not in unique_type_sequences else '0' for x in p.split('\t')]) for p in P_new_]
+    new_new_ = ['\t'.join(['1' if x not in unique_type_sequences else '0' for x in p.split('\t')])
+                for p in P_new_]
     XYP_new_ = interleave([X_new_, Y_new_, P_new_, new_new_])
 
     XYP_test_ = interleave([X_test_, Y_test_, P_test_])

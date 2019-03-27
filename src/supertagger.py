@@ -1,4 +1,3 @@
-# from Transformer.src.UniversalTransformer import UniversalTransformer as Transformer
 from Transformer.src.Transformer import Transformer
 from Transformer.src.utils import FuzzyLoss, CustomLRScheduler, noam_scheme, Mask
 
