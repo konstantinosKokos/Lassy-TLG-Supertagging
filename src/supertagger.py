@@ -122,7 +122,7 @@ class Supertagger(nn.Module):
                     encoder_mask[i, :, l::] = 0
                 encoder_mask = encoder_mask.to(self.device)
                 batch_p = self.transformer.infer(batch_x, encoder_mask, dataset.type_dict['<SOS>'])
-                batch_loss = criterion(batch_p[:, :-1].permute(0, 2, 1), batch_y[:, 1:])
+                batch_loss = criterion(torch.log(batch_p[:, :-1]).permute(0, 2, 1), batch_y[:, 1:])
                 loss += batch_loss.item()
                 (bs, bts), (bw, btw) = accuracy(batch_p[:, :-1].argmax(dim=-1), batch_y[:, 1:], 0)
                 BS += bs
