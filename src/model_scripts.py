@@ -76,119 +76,37 @@ def bpe_elmo(data_path='data/XY_inf'):
 
 def bpe_long_evaluation():
     data_path = 'data/XY_long_0.p'
+    train_path = 'data/XY_0.p'
+    split_path = 'data/XY_100_split.p'
+
     store_path = 'stored_models/bpe_elmo_0_1.p'
 
     with open(data_path, 'rb') as f:
         X, Y, type_to_int = pickle.load(f)
-
-    tlg = dataprep.bpe_elmo(data_path=data_path)
-
-    num_classes = len(tlg.type_dict) + 1
-    d_model = 1024
-    batch_size = 64
-    n = Supertagger(num_classes, 3, 8, 1, 2, 1024, dropout=0.2, device='cuda', d_model=d_model)
-    with open(store_path, 'rb') as f:
-        n.load_state_dict(torch.load(f))
-    n.eval()
-    max_len = 6
-
-    P_val = list(chain.from_iterable(n.infer_epoch(tlg, batch_size, [i for i in range(len(tlg))], max_len)))
-    P_test = list(chain.from_iterable(n.infer_epoch(tlg, batch_size, [i for i in range(len(tlg))], max_len)))
-    del n, tlg
-
-    int_to_type = {v: k for k, v in type_to_int.items()}
-    Y_train = list(zip(*(X, Y)))
-    X_val, Y_val = list(zip(*(X, Y)))
-    X_test, Y_test = list(zip((X, Y)))
-
-    def convert_ints_to_atoms(y: List[int]) -> List[str]:
-        return list(map(lambda i: int_to_type[i], y))
-
-    def convert_atoms_to_types(y: List[str]) -> List[str]:
-        return (' '.join(list(map(lambda a: a.replace('+', ' '), y))) + ' ').split(' <TE> ')[:-1]
-
-    def convert_ints_to_types(y: List[int]) -> List[str]:
-        return convert_atoms_to_types(convert_ints_to_atoms(y))
-
-    def tab_join(y: List[str]) -> str:
-        return '\t'.join(y)
-
-    X_test_ = list(map(lambda x: list(map(lambda w: w.encode('latin-1', 'replace').decode('latin-1'), x)), X_test))
-
-    Y_test_ = list(map(convert_ints_to_types, Y_test))
-    P_test_ = list(map(convert_ints_to_types, P_test))
-    Y_train_ = list(map(convert_ints_to_types, Y_train))
-
-    type_counts = Counter(list(chain.from_iterable(Y_train_)))
-
-    def occurrence_correct(y: List[str], p: List[str], occ: int) -> Tuple[int, int]:
-        yp_o = list(filter(lambda yp: type_counts[yp[0]] == occ, zip(y, p)))
-        return len(yp_o), len(list(filter(lambda yp: yp[0] == yp[1], yp_o)))
-
-    def count_occurrence_correct(Y: List[List[str]], P: List[List[str]], occ: int) -> Tuple[int, int]:
-        return reduce(lambda x, y: (x[0] + y[0], x[1] + y[1]), list(map(lambda z, w: occurrence_correct(z, w, occ),
-                                                                        Y, P)))
-
-    def index_occurrence_correct(Y: List[List[str]], P: List[List[str]], occ: int) -> List[int]:
-        yp = list(map(lambda y, p: occurrence_correct(y, p, occ), Y, P))
-        return [i for i in range(len(Y)) if yp[i][1] > 0]
-
-    def imagined(y: List[str], p: List[str], correct: bool=False) -> List[bool]:
-        return [True if (type_counts[p[i]] == 0 and (y[i] == p[i] or not correct)) else False for i in range(len(y))]
-
-    def index_imagined(Y: List[List[str]], P: List[List[str]], correct: bool=False) -> List[int]:
-        C = list(map(lambda y, p: imagined(y, p, correct), Y, P))
-        return [idx for idx, im in enumerate(C) if any(im)]
-
-    def count_imagined(Y: List[List[str]], P: List[List[str]]) -> int:
-        C = list(map(lambda y, p: imagined(y, p), Y, P))
-        return sum([len(list(filter(lambda x: x, im))) for im in C])
-
-    def count_correct(y: List[str], p: List[str]) -> Tuple[int, int]:
-        return len(y), len(list(filter(lambda x: x[0] == x[1], zip(y, p))))
-
-    def accuracy(Y: List[List[str]], P: List[List[str]]) -> Tuple[int, int]:
-        return reduce(lambda x, y: (x[0] + y[0], x[1] + y[1]), list(map(count_correct, Y, P)))
-
-    test_accuracy = accuracy(Y_test_, P_test_)
-    print('Test accuracy: {}/{} ({})'.format(test_accuracy[1], test_accuracy[0], test_accuracy[1]/test_accuracy[0]))
-    for occ in range(11):
-        a = count_occurrence_correct(Y_test_, P_test_, occ)
-        print(' {} Occurrence Accuracy: {}/{} ({})'.format(occ, a[1], a[0], a[1]/a[0]))
-    print('Imagined new types {} times.'.format(count_imagined(Y_test_, P_test_)))
-
-
-def bpe_evaluation():
-    data_path = 'data/XY_0'
-    split_path = 'data/XY_100_split.p'
-    store_path = 'stored_models/bpe_elmo_0.p'
-    result_path = data_path + '_results.tsv'
-    new_path = data_path + '_new.tsv'
-    data_path = data_path + '.p'
-
     with open(split_path, 'rb') as f:
-        train_indices, val_indices, test_indices = pickle.load(f)
-    with open(data_path, 'rb') as f:
-        X, Y, type_to_int = pickle.load(f)
+        train_indices, _, _ = pickle.load(f)
+    with open(train_path, 'rb') as f:
+        X_train, Y_train, _ = pickle.load(f)
 
     tlg = dataprep.bpe_elmo(data_path=data_path)
 
     num_classes = len(tlg.type_dict) + 1
     d_model = 1024
-    batch_size = 64
+    batch_size = 128
     n = Supertagger(num_classes, 3, 8, 1, 2, 1024, dropout=0.2, device='cuda', d_model=d_model)
     with open(store_path, 'rb') as f:
         n.load_state_dict(torch.load(f))
     n.eval()
-    max_len = 6
+    max_len = 5
 
-    P_val = list(chain.from_iterable(n.infer_epoch(tlg, batch_size, val_indices, max_len)))
-    P_test = list(chain.from_iterable(n.infer_epoch(tlg, batch_size, test_indices, max_len)))
+    test_indices = [i for i in range(1024)]
+
+    P_test = n.infer_epoch(tlg, batch_size, test_indices, max_len)
+    P_test = list(chain.from_iterable(P_test))
     del n, tlg
 
     int_to_type = {v: k for k, v in type_to_int.items()}
-    X_train, Y_train = list(zip(*[(X[i], Y[i]) for i in train_indices]))
-    X_val, Y_val = list(zip(*[(X[i], Y[i]) for i in val_indices]))
+    _, Y_train = list(zip(*[(X_train[i], Y_train[i]) for i in train_indices]))
     X_test, Y_test = list(zip(*[(X[i], Y[i]) for i in test_indices]))
 
     def convert_ints_to_atoms(y: List[int]) -> List[str]:
@@ -224,6 +142,103 @@ def bpe_evaluation():
         return [i for i in range(len(Y)) if yp[i][1] > 0]
 
     def imagined(y: List[str], p: List[str], correct: bool=False) -> List[bool]:
+        return [True if (type_counts[p[i]] == 0 and (y[i] == p[i] or not correct)) else False for i in range(
+            min(len(y), len(p)))]
+
+    def index_imagined(Y: List[List[str]], P: List[List[str]], correct: bool=False) -> List[int]:
+        C = list(map(lambda y, p: imagined(y, p, correct), Y, P))
+        return [idx for idx, im in enumerate(C) if any(im)]
+
+    def count_imagined(Y: List[List[str]], P: List[List[str]]) -> int:
+        C = list(map(lambda y, p: imagined(y, p), Y, P))
+        return sum([len(list(filter(lambda x: x, im))) for im in C])
+
+    def count_correct(y: List[str], p: List[str]) -> Tuple[int, int]:
+        return len(y), len(list(filter(lambda x: x[0] == x[1], zip(y, p))))
+
+    def accuracy(Y: List[List[str]], P: List[List[str]]) -> Tuple[int, int]:
+        return reduce(lambda x, y: (x[0] + y[0], x[1] + y[1]), list(map(count_correct, Y, P)))
+
+    test_accuracy = accuracy(Y_test_, P_test_)
+    print('Test accuracy: {}/{} ({})'.format(test_accuracy[1], test_accuracy[0], test_accuracy[1]/test_accuracy[0]))
+    for occ in range(11):
+        a = count_occurrence_correct(Y_test_, P_test_, occ)
+        print(' {} Occurrence Accuracy: {}/{} ({})'.format(occ, a[1], a[0], a[1]/a[0]))
+    print('Imagined new types {} times.'.format(count_imagined(Y_test_, P_test_)))
+
+
+def bpe_evaluation():
+    data_path = 'data/XY_0'
+    split_path = 'data/XY_100_split.p'
+    store_path = 'stored_models/bpe_elmo_0_1.p'
+    result_path = data_path + '_results.tsv'
+    new_path = data_path + '_new.tsv'
+    data_path = data_path + '.p'
+
+    with open(split_path, 'rb') as f:
+        train_indices, val_indices, test_indices = pickle.load(f)
+    with open(data_path, 'rb') as f:
+        X, Y, type_to_int = pickle.load(f)
+
+    tlg = dataprep.bpe_elmo(data_path=data_path)
+
+    num_classes = len(tlg.type_dict) + 1
+    d_model = 1024
+    batch_size = 64
+    n = Supertagger(num_classes, 3, 8, 1, 2, 1024, dropout=0.2, device='cuda', d_model=d_model)
+    with open(store_path, 'rb') as f:
+        n.load_state_dict(torch.load(f))
+    n.eval()
+    max_len = 6
+
+    P_test = list(chain.from_iterable(n.infer_epoch(tlg, batch_size, test_indices, max_len)))
+    del n, tlg
+
+    int_to_type = {v: k for k, v in type_to_int.items()}
+    X_train, Y_train = list(zip(*[(X[i], Y[i]) for i in train_indices]))
+    X_test, Y_test = list(zip(*[(X[i], Y[i]) for i in test_indices]))
+
+    def convert_ints_to_atoms(y: List[int]) -> List[str]:
+        return list(map(lambda i: int_to_type[i], y))
+
+    def convert_atoms_to_types(y: List[str]) -> List[str]:
+        return (' '.join(list(map(lambda a: a.replace('+', ' '), y))) + ' ').split(' <TE> ')[:-1]
+
+    def convert_ints_to_types(y: List[int]) -> List[str]:
+        return convert_atoms_to_types(convert_ints_to_atoms(y))
+
+    def tab_join(y: List[str]) -> str:
+        return '\t'.join(y)
+
+    X_test_ = list(map(lambda x: list(map(lambda w: w.encode('latin-1', 'replace').decode('latin-1'), x)), X_test))
+
+    Y_test_ = list(map(convert_ints_to_types, Y_test))
+    P_test_ = list(map(convert_ints_to_types, P_test))
+    Y_train_ = list(map(convert_ints_to_types, Y_train))
+
+    type_counts = Counter(list(chain.from_iterable(Y_train_)))
+
+    def range_correct(y: List[str], p: List[str], m: int, M: int) -> Tuple[int, int]:
+        yp_o = list(filter(lambda yp: m < type_counts[yp[0]] <= M, zip(y, p)))
+        return len(yp_o), len(list(filter(lambda yp: yp[0] == yp[1], yp_o)))
+
+    def count_range_correct(Y: List[List[str]], P: List[List[str]], m: int, M: int) -> Tuple[int, int]:
+        return reduce(lambda x, y: (x[0] + y[0], x[1] + y[1]), list(map(lambda z, w: range_correct(z, w, m, M),
+                                                                       Y, P)))
+
+    def occurrence_correct(y: List[str], p: List[str], occ: int) -> Tuple[int, int]:
+        yp_o = list(filter(lambda yp: type_counts[yp[0]] == occ, zip(y, p)))
+        return len(yp_o), len(list(filter(lambda yp: yp[0] == yp[1], yp_o)))
+
+    def count_occurrence_correct(Y: List[List[str]], P: List[List[str]], occ: int) -> Tuple[int, int]:
+        return reduce(lambda x, y: (x[0] + y[0], x[1] + y[1]), list(map(lambda z, w: occurrence_correct(z, w, occ),
+                                                                        Y, P)))
+
+    def index_occurrence_correct(Y: List[List[str]], P: List[List[str]], occ: int) -> List[int]:
+        yp = list(map(lambda y, p: occurrence_correct(y, p, occ), Y, P))
+        return [i for i in range(len(Y)) if yp[i][1] > 0]
+
+    def imagined(y: List[str], p: List[str], correct: bool=False) -> List[bool]:
         return [True if (type_counts[p[i]] == 0 and (y[i] == p[i] or not correct)) else False for i in range(len(y))]
 
     def index_imagined(Y: List[List[str]], P: List[List[str]], correct: bool=False) -> List[int]:
@@ -245,6 +260,9 @@ def bpe_evaluation():
     for occ in range(11):
         a = count_occurrence_correct(Y_test_, P_test_, occ)
         print(' {} Occurrence Accuracy: {}/{} ({})'.format(occ, a[1], a[0], a[1]/a[0]))
+    for m, M in ([0, 10], [10, 100], [100, 1e10]):
+        a = count_range_correct(Y_test, P_test_, m, M)
+        print(' {}-{} Range Accuracy: {}/{} ({})'.format(m, M, a[1], a[0], a[1] / a[0]))
     print('Imagined new types {} times.'.format(count_imagined(Y_test_, P_test_)))
 
     def store(x: List[str], path: str) -> None:
@@ -295,3 +313,37 @@ def bpe_evaluation():
     #
     # store(XYP_test_, result_path)
     # store(XYP_new_, new_path)
+
+
+def embedding_visualization():
+    data_path = 'data/XY_0.p'
+    store_path = 'stored_models/bpe_elmo_0_1.p'
+    with open(data_path, 'rb') as f:
+        X, Y, type_to_int = pickle.load(f)
+
+
+    num_classes = len(type_to_int)+2
+    d_model = 1024
+    batch_size = 128
+    n = Supertagger(num_classes, 3, 8, 1, 2, 1024, dropout=0.2, device='cuda', d_model=d_model)
+    with open(store_path, 'rb') as f:
+        n.load_state_dict(torch.load(f))
+    n.eval()
+
+    e = n.transformer.output_embedder
+    idx = torch.arange(num_classes, device='cuda').view(-1, 1)
+    embeddings = e(idx).detach().view(num_classes, -1).cpu()[:len(type_to_int)]
+    int_to_type = {v:k for k, v in type_to_int.items()}
+    labels = [int_to_type[i+1] for i in range(62)]
+    from sklearn.manifold import TSNE
+    tsne = TSNE(2, metric='cosine', early_exaggeration=50)
+    em = tsne.fit_transform(embeddings)
+    from matplotlib import pyplot as plt
+
+    fig, ax = plt.subplots()
+    ax.scatter(em[:, 0], em[:, 1])
+
+    for i, txt in enumerate(labels):
+        ax.annotate(txt, (em[i, 0], em[i, 1]))
+
+    return ax
