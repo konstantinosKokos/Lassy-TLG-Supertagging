@@ -17,10 +17,10 @@ from collections import Counter, defaultdict
 snd = lambda x: x[1]
 
 
-def bpe_elmo(data_path='data/XY_50'):
+def bpe_elmo(data_path='data/XY_inf'):
     tlg = dataprep.bpe_elmo(data_path=data_path + '.p')
     split_path = 'data/XY_100_split.p'
-    store_path = 'stored_models/bpe_elmo_50.p'
+    store_path = 'stored_models/inf_elmo.p'
 
     d_model = 1024
     batch_size = 128
@@ -72,6 +72,90 @@ def bpe_elmo(data_path='data/XY_50'):
         except KeyboardInterrupt:
             return n
     return n
+
+
+def bpe_long_evaluation():
+    data_path = 'data/XY_long_0.p'
+    store_path = 'stored_models/bpe_elmo_0_1.p'
+
+    with open(data_path, 'rb') as f:
+        X, Y, type_to_int = pickle.load(f)
+
+    tlg = dataprep.bpe_elmo(data_path=data_path)
+
+    num_classes = len(tlg.type_dict) + 1
+    d_model = 1024
+    batch_size = 64
+    n = Supertagger(num_classes, 3, 8, 1, 2, 1024, dropout=0.2, device='cuda', d_model=d_model)
+    with open(store_path, 'rb') as f:
+        n.load_state_dict(torch.load(f))
+    n.eval()
+    max_len = 6
+
+    P_val = list(chain.from_iterable(n.infer_epoch(tlg, batch_size, [i for i in range(len(tlg))], max_len)))
+    P_test = list(chain.from_iterable(n.infer_epoch(tlg, batch_size, [i for i in range(len(tlg))], max_len)))
+    del n, tlg
+
+    int_to_type = {v: k for k, v in type_to_int.items()}
+    Y_train = list(zip(*(X, Y)))
+    X_val, Y_val = list(zip(*(X, Y)))
+    X_test, Y_test = list(zip((X, Y)))
+
+    def convert_ints_to_atoms(y: List[int]) -> List[str]:
+        return list(map(lambda i: int_to_type[i], y))
+
+    def convert_atoms_to_types(y: List[str]) -> List[str]:
+        return (' '.join(list(map(lambda a: a.replace('+', ' '), y))) + ' ').split(' <TE> ')[:-1]
+
+    def convert_ints_to_types(y: List[int]) -> List[str]:
+        return convert_atoms_to_types(convert_ints_to_atoms(y))
+
+    def tab_join(y: List[str]) -> str:
+        return '\t'.join(y)
+
+    X_test_ = list(map(lambda x: list(map(lambda w: w.encode('latin-1', 'replace').decode('latin-1'), x)), X_test))
+
+    Y_test_ = list(map(convert_ints_to_types, Y_test))
+    P_test_ = list(map(convert_ints_to_types, P_test))
+    Y_train_ = list(map(convert_ints_to_types, Y_train))
+
+    type_counts = Counter(list(chain.from_iterable(Y_train_)))
+
+    def occurrence_correct(y: List[str], p: List[str], occ: int) -> Tuple[int, int]:
+        yp_o = list(filter(lambda yp: type_counts[yp[0]] == occ, zip(y, p)))
+        return len(yp_o), len(list(filter(lambda yp: yp[0] == yp[1], yp_o)))
+
+    def count_occurrence_correct(Y: List[List[str]], P: List[List[str]], occ: int) -> Tuple[int, int]:
+        return reduce(lambda x, y: (x[0] + y[0], x[1] + y[1]), list(map(lambda z, w: occurrence_correct(z, w, occ),
+                                                                        Y, P)))
+
+    def index_occurrence_correct(Y: List[List[str]], P: List[List[str]], occ: int) -> List[int]:
+        yp = list(map(lambda y, p: occurrence_correct(y, p, occ), Y, P))
+        return [i for i in range(len(Y)) if yp[i][1] > 0]
+
+    def imagined(y: List[str], p: List[str], correct: bool=False) -> List[bool]:
+        return [True if (type_counts[p[i]] == 0 and (y[i] == p[i] or not correct)) else False for i in range(len(y))]
+
+    def index_imagined(Y: List[List[str]], P: List[List[str]], correct: bool=False) -> List[int]:
+        C = list(map(lambda y, p: imagined(y, p, correct), Y, P))
+        return [idx for idx, im in enumerate(C) if any(im)]
+
+    def count_imagined(Y: List[List[str]], P: List[List[str]]) -> int:
+        C = list(map(lambda y, p: imagined(y, p), Y, P))
+        return sum([len(list(filter(lambda x: x, im))) for im in C])
+
+    def count_correct(y: List[str], p: List[str]) -> Tuple[int, int]:
+        return len(y), len(list(filter(lambda x: x[0] == x[1], zip(y, p))))
+
+    def accuracy(Y: List[List[str]], P: List[List[str]]) -> Tuple[int, int]:
+        return reduce(lambda x, y: (x[0] + y[0], x[1] + y[1]), list(map(count_correct, Y, P)))
+
+    test_accuracy = accuracy(Y_test_, P_test_)
+    print('Test accuracy: {}/{} ({})'.format(test_accuracy[1], test_accuracy[0], test_accuracy[1]/test_accuracy[0]))
+    for occ in range(11):
+        a = count_occurrence_correct(Y_test_, P_test_, occ)
+        print(' {} Occurrence Accuracy: {}/{} ({})'.format(occ, a[1], a[0], a[1]/a[0]))
+    print('Imagined new types {} times.'.format(count_imagined(Y_test_, P_test_)))
 
 
 def bpe_evaluation():
